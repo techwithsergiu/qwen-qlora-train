@@ -1,0 +1,50 @@
+# Qwen3-1.7B sanity config (RTX 3070 8GB friendly)
+# Run: qlora-train --config configs/qwen3/1.7b.yaml
+run_name: qwen3-1.7b-sanity
+model_name: unsloth/Qwen3-1.7B-bnb-4bit
+chat_template: qwen3
+
+# dataset
+dataset_id: TeichAI/claude-sonnet-4.5-high-reasoning-250x
+dataset_split: train
+messages_field: messages
+
+# VRAM knobs
+max_seq_length: 5120
+max_length: 5120
+
+# LoRA
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.0
+
+# training
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 4
+learning_rate: 2.0e-4
+warmup_ratio: 0.05
+max_steps: 500
+
+# memory/perf
+load_in_4bit: true
+attn_implementation: sdpa
+gradient_checkpointing: unsloth
+
+# optimizer (switch to adamw_torch if bitsandbytes issues)
+optim: adamw_8bit
+
+# keep last tokens, not the beginning
+truncate_side: left
+
+# agent policies
+dataset_schema: auto
+assistant_roles: ["assistant"]
+reasoning_field: reasoning_content
+reasoning_keys: ["reasoning", "reasoning_content", "thinking", "reason"]
+think_role: "think"
+extract_think_tags: true
+
+# think loss control
+think_loss: all
+think_mode: keep
+think_max_tokens: 0
