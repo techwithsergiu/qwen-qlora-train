@@ -1,0 +1,10 @@
+__pycache__
+qwen_qlora_train.egg-info
+venv
+unsloth_compiled_cache
+adapters
+outputs
+merged
+Qwen*
+diagrams
+*.txt
