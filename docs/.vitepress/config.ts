@@ -85,7 +85,7 @@ export default withMermaid(
 
       editLink: {
         pattern:
-          'https://github.com/techwithsergiu/qwen-qlora-train/edit/main/:path',
+          'https://github.com/techwithsergiu/qwen-qlora-train/edit/main/docs/:path',
         text: 'Edit this page on GitHub',
       },
     },
