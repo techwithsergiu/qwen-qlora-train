@@ -5,6 +5,12 @@ unsloth_compiled_cache
 adapters
 outputs
 merged
+
+node_modules/
+docs/.vitepress/dist/
+docs/.vitepress/cache/
+pnpm-lock.yaml
+
 Qwen*
 diagrams
 *.txt
