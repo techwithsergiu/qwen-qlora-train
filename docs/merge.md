@@ -4,8 +4,37 @@ title: CPU merge
 
 # CPU merge
 
-Needed only if you want a standalone merged model (for GGUF conversion or publishing).
-If you just want to test the adapter, use [`qlora-infer`](inference.md) — no merge needed.
+## Purpose
+
+Merge a LoRA adapter into base weights on CPU to produce a standalone model.
+This is usually needed for export/publishing workflows (for example GGUF conversion).
+
+## When to use
+
+- You need a standalone merged model directory.
+- You plan GGUF conversion and quantization.
+- You want to publish merged weights.
+
+If you only want to test adapter behavior, use [Inference](inference.md) instead.
+
+## Syntax
+
+```text
+qlora-merge --base <repo_or_path> --adapter <dir> --output <dir> [options]
+```
+
+## Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--base` | — | HF repo id or local path of full-precision base model (**required**) |
+| `--adapter` | — | Path to trained LoRA adapter (**required**) |
+| `--output` | — | Output directory for merged model (**required**) |
+| `--dtype` | `bf16` | `bf16` or `f16` (`f16` commonly used for llama.cpp workflows) |
+| `--loader` | `auto` | Loader auto-detect; `qwen3.5` forces `Qwen3_5ForConditionalGeneration` |
+| `--hf-token` | `null` | HF access token |
+
+## Examples
 
 ```bash
 # Qwen3 1.7B
@@ -14,7 +43,9 @@ qlora-merge \
   --adapter adapters/qwen3-1.7b-sanity \
   --output  merged/qwen3-1.7b-merged-f16 \
   --dtype   f16
+```
 
+```bash
 # Qwen3.5 0.8B
 qlora-merge \
   --base    unsloth/Qwen3.5-0.8B \
@@ -23,19 +54,6 @@ qlora-merge \
   --dtype   f16
 ```
 
-Hardware: ~10–20 GB RAM depending on model size, no VRAM needed.
-
-## Flags
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--base` | — | HF repo id or local path of full-precision base model (**required**) |
-| `--adapter` | — | Path to trained LoRA adapter directory (**required**) |
-| `--output` | — | Directory where merged model will be saved (**required**) |
-| `--dtype` | `bf16` | `bf16` (matches Qwen3.5 training dtype) or `f16` (llama.cpp compat) |
-| `--loader` | `auto` | `auto` detects from name · `qwen3.5` forces `Qwen3_5ForConditionalGeneration` |
-| `--hf-token` | `null` | HF access token |
-
 ## Loader auto-detection
 
 | Model name contains | Loader used |
@@ -43,31 +61,49 @@ Hardware: ~10–20 GB RAM depending on model size, no VRAM needed.
 | `qwen3.5` or `qwen3_5` | `Qwen3_5ForConditionalGeneration` |
 | anything else | `AutoModelForCausalLM` |
 
-Use `--loader qwen3.5` to override if auto-detection gets it wrong.
+Use `--loader qwen3.5` to override when needed.
 
-## Adding support for a new model family
+## Output examples
 
-The loader registry lives in `merge_cpu.py` as two module-level constants:
+### Example output
 
-```python
-# 1. Map a loader key to a transformers class name
-LOADER_CLASSES: dict[str, str] = {
-    "qwen3.5": "Qwen3_5ForConditionalGeneration",
-    "auto":    "AutoModelForCausalLM",
-}
+```text
+base    : unsloth/Qwen3-1.7B
+adapter : adapters/qwen3-1.7b-sanity
+output  : merged/qwen3-1.7b-merged-f16
+dtype   : f16
+loader  : AutoModelForCausalLM  (resolved from --loader=auto)
 
-# 2. Map a substring in the model name to a loader key (auto-detection)
-AUTO_DETECT: list[tuple[str, str]] = [
-    ("qwen3.5", "qwen3.5"),
-    ("qwen3_5", "qwen3.5"),
-]
+RAM : 47.5 GB free / 58.7 GB total
+⏳ Loading base model (AutoModelForCausalLM) …
+✅ Base model loaded  (1s)
+⏳ Loading tokenizer …
+✅ Tokenizer loaded
+⏳ Loading LoRA adapter …
+✅ Adapter loaded
+⏳ Merging adapter into base weights …
+✅ Merged  (3s)
+💾 Saving merged model to 'merged/qwen3-1.7b-merged-f16' …
+✅ Saved  (2s)
+✅ Done. Merged model: merged/qwen3-1.7b-merged-f16
 ```
 
-To add a new family (e.g. a hypothetical `Qwen4ForCausalLM`):
-1. Add an entry to `LOADER_CLASSES`: `"qwen4": "Qwen4ForCausalLM"`
-2. Add a row to `AUTO_DETECT`: `("qwen4", "qwen4")`
-3. The new key becomes available as `--loader qwen4` and fires automatically when the model name contains `"qwen4"`
+Interpretation: merge completed on CPU and produced standalone f16 weights.
 
----
+Stable fields: merge stage sequence and final output marker.
+Variable fields: RAM values, stage timings, path names, deprecation warnings.
 
-After merging, see [Post-merge workflow](post-merge-workflow.md) for GGUF conversion, quantization, and Hub upload.
+## Edge cases / limitations
+
+> [!NOTE]
+> Typical merge runtime requires ~10-20 GB RAM depending on model size.
+> VRAM is not required for the merge operation itself.
+
+- Wrong loader selection can break model load; use `--loader` override.
+- `--dtype f16` is usually preferred for downstream llama.cpp conversion.
+
+## Related
+
+- [Inference](inference.md)
+- [Post-merge workflow](post-merge-workflow.md)
+- [Training pipeline](training-pipeline.md)

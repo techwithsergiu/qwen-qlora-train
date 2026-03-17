@@ -4,61 +4,98 @@ title: Reasoning control
 
 # Reasoning / thinking control
 
-Qwen3 and Qwen3.5 embed reasoning inside assistant messages as `<think>…</think>`.
+## Purpose
 
-For the full field reference see [Config reference](config-reference.md#reasoning-thinking).
+Control how reasoning (`<think>...</think>`) is kept, removed, and trained.
+This page covers `think_mode`, `think_loss`, and `think_max_tokens` behavior.
 
----
+## When to use
 
-## think_mode — keep or drop reasoning
+- You want answer-only behavior for agent/tool datasets.
+- You want to preserve full reasoning traces for reasoning datasets.
+- You need to cap reasoning token length for memory/perf constraints.
+
+## Syntax (config fields)
 
 ```yaml
-think_mode: keep   # keep | drop
+think_mode: keep                 # keep | drop
+think_loss: answer_only          # all | answer_only | answer_plus_think
+think_max_tokens: 0              # 0 = no cap
 ```
 
-- `keep` — preserve reasoning content (apply `think_max_tokens` cap if set)
-- `drop` — remove reasoning entirely; trains pure answer-style behavior
+## Options
 
----
+### `think_mode`
 
-## think_loss — gradient scope inside assistant turns
+| Value | Effect |
+|-------|--------|
+| `keep` | Keep reasoning content (with optional cap) |
+| `drop` | Remove reasoning content entirely |
 
-```yaml
-think_loss: all   # all | answer_only | answer_plus_think
+### `think_loss`
+
+| Value | Gradient scope |
+|-------|----------------|
+| `all` | Full assistant span: think + answer |
+| `answer_only` | Tokens after `</think>` only |
+| `answer_plus_think` | Think content + answer, excluding literal tags |
+
+### `think_max_tokens`
+
+- `0` means no cap.
+- Positive values cap reasoning token count per message.
+
+## Decision flow
+
+```text
+1. Decide content retention (`think_mode`):
+   - `keep` to preserve reasoning content.
+   - `drop` for answer-only datasets/behavior.
+2. Decide gradient scope (`think_loss`):
+   - `all`, `answer_only`, or `answer_plus_think`.
+3. Decide cap (`think_max_tokens`):
+   - `0` for unlimited.
+   - positive value to constrain long reasoning traces.
+4. Validate against eval target:
+   - train/eval behavior should match (answer-only vs full reasoning).
 ```
 
-| Value | What gets gradient |
-|-------|--------------------|
-| `all` | Full assistant span — `<think>` content + answer |
-| `answer_only` | Tokens after `</think>` only — recommended for agent/tool training |
-| `answer_plus_think` | Think content + answer, but not the literal `<think>`/`</think>` tags |
-
----
-
-## Recommended patterns
+## Examples
 
 ```yaml
-# Agent / tool training — stable answers, no think gradient
+# Agent/tool training: keep think text, train only final answer
+think_mode: keep
 think_loss: answer_only
-think_mode: keep
-
-# Reasoning dataset — train full chain of thought
-think_loss: all
-think_mode: keep
-
-# Pure answer-style (no reasoning at all)
-think_mode: drop
-think_loss: all   # irrelevant when think_mode: drop
 ```
 
----
-
-## Token cap warning
+```yaml
+# Full reasoning training
+think_mode: keep
+think_loss: all
+```
 
 ```yaml
+# Pure answer-style behavior
+think_mode: drop
+think_loss: all
+```
+
+```yaml
+# Reasoning cap example
 think_max_tokens: 512
 ```
 
-> ⚠️ Capping creates truncated reasoning mid-thought. The model may learn
-> to start a chain of thought and abruptly stop. Prefer shorter-think datasets
-> over aggressive capping. Use only if you have a specific reason.
+## Edge cases / limitations
+
+> [!WARNING]
+> Aggressive `think_max_tokens` can truncate reasoning mid-thought and teach abrupt stop patterns.
+> Prefer cleaner datasets over heavy truncation when possible.
+
+- `think_loss` has no practical effect on reasoning text when `think_mode: drop`.
+- Keep reasoning settings aligned with your evaluation target (answer-only vs full reasoning).
+
+## Related
+
+- [Config reference](config-reference.md#reasoning--thinking)
+- [Dataset pipeline](dataset-pipeline.md)
+- [Quickstart](quickstart.md)

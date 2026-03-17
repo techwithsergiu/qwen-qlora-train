@@ -4,93 +4,116 @@ title: Inference
 
 # Inference
 
-`qlora-infer` runs inference on a base model, a base model with a LoRA adapter, or a merged model. The primary use case is verifying an adapter immediately after training — **no CPU merge needed**.
+## Purpose
 
-`--backend auto` selects the backend automatically: `unsloth` (4-bit) if the model id contains `bnb-4bit`, `transformers` (fp16/bf16) otherwise.
+Run inference for:
+- base model only,
+- base model + LoRA adapter,
+- merged model.
 
----
+Primary use case: validate adapter behavior immediately after training, without CPU merge.
 
-## Modes
+## When to use
 
-### Smoke tests
+- You need a fast sanity check after `qlora-train`.
+- You want to compare adapter and merged output.
+- You need single-prompt or interactive checks.
 
-Run four predefined prompts covering short answer, code generation, stop behavior, and thinking. The fastest way to verify an adapter works correctly after training.
+## Syntax
+
+```text
+qlora-infer --model <repo_or_path> [options]
+```
+
+## Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--model` | — | HF repo id or local path (**required**) |
+| `--adapter` | `null` | LoRA adapter path; omit for merged models |
+| `--hf-token` | `null` | HF access token |
+| `--backend` | `auto` | `auto` -> `unsloth` for `bnb-4bit`, otherwise `transformers` |
+| `--dtype` | `f16` | `f16` or `bf16` |
+| `--chat-template` | `qwen3` | Unsloth template key (unsloth path only) |
+| `--max-seq-length` | `4096` | KV cache allocation (unsloth path only) |
+| `--max-new` | `1024` | Max generated tokens |
+| `--temp` | `0.7` | Sampling temperature (`0` for greedy) |
+| `--top-p` | `0.9` | Top-p sampling |
+| `--prompt` | `null` | Single prompt mode |
+| `--interactive` | `false` | Interactive chat loop |
+| `--no-thinking` | `false` | Disable `<think>` output |
+
+## Backend decision logic
+
+```text
+1. `--backend auto`:
+   - if model id contains `bnb-4bit` -> use `unsloth`
+   - otherwise -> use `transformers`
+2. Adapter attachment:
+   - if `--adapter` provided -> base + adapter path
+   - if omitted -> merged/base-only inference
+3. Interaction mode:
+   - `--prompt` for single-shot check
+   - `--interactive` for chat loop
+4. Reasoning output mode:
+   - default: thinking enabled
+   - `--no-thinking`: answer-only output view
+```
+
+## Examples
 
 ```bash
+# Smoke tests (default mode)
 qlora-infer \
   --model   unsloth/Qwen3-1.7B-bnb-4bit \
   --adapter adapters/qwen3-1.7b-sanity
 ```
 
-### Single prompt
-
-Run one prompt and exit. Useful for scripted checks or quick comparisons between adapters.
-
 ```bash
+# Single prompt
 qlora-infer \
   --model   unsloth/Qwen3-1.7B-bnb-4bit \
   --adapter adapters/qwen3-1.7b-sanity \
   --prompt  "Explain LoRA in two sentences."
 ```
 
-### Interactive chat
-
-Maintains full conversation history across turns. Useful for testing multi-turn behavior and system prompt adherence.
-
 ```bash
+# Interactive chat
 qlora-infer \
   --model   unsloth/Qwen3-1.7B-bnb-4bit \
   --adapter adapters/qwen3-1.7b-sanity \
   --interactive
 ```
 
-Type `exit` or press `Ctrl-C` to quit.
-
-### Thinking mode
-
-Qwen3 models generate a `<think>…</think>` block before answering. Use `--no-thinking` to suppress it — useful for testing `answer_only` trained adapters or for cleaner output during review.
-
 ```bash
-# With thinking (default)
+# Thinking on/off
 qlora-infer \
   --model   unsloth/Qwen3-1.7B-bnb-4bit \
   --adapter adapters/qwen3-1.7b-sanity
 
-# Without thinking
 qlora-infer \
   --model   unsloth/Qwen3-1.7B-bnb-4bit \
   --adapter adapters/qwen3-1.7b-sanity \
   --no-thinking
 ```
 
-### Merged model
-
-Run a merged fp16 model directly — no adapter needed. Use `--dtype f16` and `--backend transformers` (or let `auto` detect it from the model path).
-
 ```bash
+# Merged model (no adapter)
 qlora-infer --model merged/qwen3-1.7b-merged-f16 --dtype f16
 ```
 
----
+## Edge cases / limitations
 
-## Flags
+> [!NOTE]
+> `--backend auto` picks `unsloth` when model id contains `bnb-4bit`,
+> and `transformers` otherwise.
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--model` | — | HF repo id or local path (**required**) |
-| `--adapter` | `null` | LoRA adapter directory — omit for merged models |
-| `--hf-token` | `null` | HF access token |
-| `--backend` | `auto` | `auto` detects from model id · `unsloth` (4-bit) · `transformers` (fp16/bf16) |
-| `--dtype` | `f16` | `f16` or `bf16` |
-| `--chat-template` | `qwen3` | Unsloth template key (unsloth path only) |
-| `--max-seq-length` | `4096` | KV cache allocation — match your training `max_seq_length` (unsloth path only) |
-| `--max-new` | `1024` | Max new tokens to generate |
-| `--temp` | `0.7` | Sampling temperature — set to `0` for greedy decoding |
-| `--top-p` | `0.9` | Top-p sampling |
-| `--prompt` | `null` | Single user prompt — skips predefined smoke tests |
-| `--interactive` | `false` | Interactive chat loop with full conversation history |
-| `--no-thinking` | `false` | Set `enable_thinking=False` — suppresses `<think>` block |
+- `--interactive` keeps conversation history until `exit` or `Ctrl-C`.
+- For merged fp16 models, omit `--adapter`.
+- Use `--no-thinking` for answer-only evaluation.
 
----
+## Related
 
-If you want a standalone model for GGUF conversion, see [CPU merge](merge.md).
+- [Quickstart](quickstart.md)
+- [CPU merge](merge.md)
+- [Troubleshooting](troubleshooting.md)

@@ -4,217 +4,183 @@ title: Dataset pipeline
 
 # Dataset pipeline
 
-## How it works
+## Problem
 
-The pipeline never builds prompts manually. Instead it works in three layers:
+Training quality depends on how raw dataset rows are converted into tokenized samples with correct loss masks.
+Naive prompt construction and naive truncation can break system context, tools context, and assistant-only loss behavior.
+
+## Architecture / mechanics
+
+The pipeline is layered and avoids manual prompt assembly.
 
 ```text
-HF dataset row
-      │
-      ▼  dataset_parsers.py — canonicalize_row()
-      │  • detect schema (messages / prompt_response / auto)
-      │  • normalize reasoning fields → reasoning_content
-      │  • extract <think>...</think> from assistant content
-      │  • apply think_mode / think_max_tokens policy
-      │  • detect tools column → extras{"tools": ...}
-      │
-      ▼  data_pipeline.py — structured_truncate_messages()
-      │  • prune middle history turns to fit max_length
-      │  • trim reasoning_content in kept turns
-      │  • fallback: token-level left-truncation
-      │
-      ▼  data_pipeline.py — build_text_and_masks()
-      │  • tokenizer.apply_chat_template(messages, tools=tools)
-      │  • char-level mask: 1 = loss, 0 = masked
-      │  • assistant_roles masking
-      │  • think_loss sub-span masking
-      │
-      ▼  data_pipeline.py — tokenize_with_char_mask()
-         • tokenize + project char mask → token labels
-         • returns {input_ids, attention_mask, labels}
+Input:
+  HF dataset row
+
+Stage 1 — dataset_parsers.py / canonicalize_row():
+  - Detect schema (`messages` / `prompt_response` / `auto`)
+  - Normalize reasoning fields -> `reasoning_content`
+  - Extract inline `<think>...</think>` from assistant content
+  - Apply `think_mode` / `think_max_tokens`
+  - Detect tools column -> `extras{"tools": ...}`
+
+Stage 2 — data_pipeline.py / structured_truncate_messages():
+  - Prune middle history turns to fit `max_length`
+  - Trim `reasoning_content` in kept turns
+  - Fallback to token-level left truncation
+
+Stage 3 — data_pipeline.py / build_text_and_masks():
+  - Render with `tokenizer.apply_chat_template(messages, tools=tools)`
+  - Build char-level loss mask (`1` = loss, `0` = masked)
+  - Apply `assistant_roles` masking
+  - Apply `think_loss` sub-span masking
+
+Stage 4 — data_pipeline.py / tokenize_with_char_mask():
+  - Tokenize rendered text
+  - Project char mask -> token `labels`
+  - Return `{input_ids, attention_mask, labels}`
+
+Output:
+  Trainer-ready tensors with role-accurate loss masking
 ```
 
-The chat template (Jinja2) lives in the tokenizer — we just call it.
-`get_chat_template(tokenizer, chat_template="qwen3")` patches it once at load
-time so the correct template is always used regardless of what the Hub model
-ships with.
+`get_chat_template(tokenizer, chat_template="qwen3")` patches template usage at load time,
+so processing stays consistent across model repos.
+The pipeline always delegates final rendering to tokenizer Jinja template
+(`apply_chat_template`) instead of manually concatenating prompt strings.
 
----
+## Supported schemas
 
-## Supported dataset schemas
-
-### `messages` (default — OpenAI API format)
-
-The most common format. Detected when the row has a list under `messages_field`.
+### `messages`
 
 ```json
 {
   "messages": [
-    {"role": "system",    "content": "You are a helpful assistant."},
-    {"role": "user",      "content": "What is 2+2?"},
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "What is 2+2?"},
     {"role": "assistant", "content": "4"}
   ]
 }
 ```
 
-Config:
-
 ```yaml
-dataset_schema: auto      # or "messages" explicitly
-messages_field: messages  # column name
+dataset_schema: auto
+messages_field: messages
 ```
 
 ### `prompt_response`
-
-Detected when the row has `prompt` + one of `response` / `completion` / `answer`.
-Converted to a two-message conversation internally.
 
 ```json
 {"prompt": "What is 2+2?", "response": "4"}
 ```
 
-Config:
-
 ```yaml
-dataset_schema: auto   # auto-detected, no extra config needed
+dataset_schema: auto
 ```
 
----
+## Reasoning and tools handling
 
-## Reasoning / thinking fields
+### Reasoning normalization
 
-Qwen3 stores reasoning inside assistant messages as `reasoning_content`.
-Many datasets use different field names — all of these are recognized and
-normalized to `reasoning_content` before the template sees them:
+Alternative fields are normalized into `reasoning_content` before templating:
 
 ```yaml
 reasoning_keys: ["reasoning", "reasoning_content", "thinking", "reason"]
 ```
 
-Also handles `<think>...</think>` inline inside `assistant.content`:
+Inline `<think>...</think>` in assistant content is extracted into `reasoning_content`.
 
-```json
-{"role": "assistant", "content": "<think>let me think...</think>\n4"}
-```
+### Tools injection
 
-→ extracted into `reasoning_content`, content becomes `"4"`.
+Tools schemas are auto-detected from common columns and passed into chat template:
+- `tools`, `tool_schemas`, `functions`, `function_schemas`.
+First matching column is used.
 
----
+Supported input forms: list, dict, JSON string.
 
-## Tools support
+> [!WARNING]
+> Tool schemas can add many tokens per sample. Run `--stats-only` before training on tool-heavy datasets.
 
-Tool schemas are auto-detected from common column names and passed directly
-to `apply_chat_template(messages, tools=tools)` — the Qwen template injects
-them into the system prompt automatically.
-
-Detected columns (first match wins): `tools`, `tool_schemas`, `functions`, `function_schemas`.
-
-Tools can be stored as a list, dict, or JSON string — all normalized.
-
-> ⚠️ Tool schemas can add hundreds or thousands of tokens per sample.
-> Always run `--stats-only` first when training on tool datasets.
-
----
-
-## Assistant-only loss masking
+## Loss masking behavior
 
 ```yaml
 assistant_roles: ["assistant"]
 ```
 
-Loss is computed **only on spans produced by roles in `assistant_roles`**.
-System / user / tool messages are masked with `-100`.
+Loss is applied only on spans produced by roles in `assistant_roles`.
+Masking is built in character space first, then projected to token labels,
+which avoids tokenizer-specific role-token heuristics.
 
-Masking is done in **character space** before tokenizing — the pipeline finds
-assistant spans in the rendered string and projects a `1/0` char mask onto token
-labels. This avoids tokenizer-specific heuristics (sentinel tokens, role tag ids)
-and works correctly with any subword vocabulary.
-
-### Known roles
-
-The Qwen3 chat template natively understands: `system`, `user`, `assistant`, `tool`.
-
-If a row contains a message with any other role, `canonicalize_row()` emits a
-`UserWarning` identifying the role and the schema, but does **not** drop the
-message — the template will either handle it or raise its own error. The warning
-surfaces the problem early so you can decide whether to filter those rows.
-
----
+Known template roles: `system`, `user`, `assistant`, `tool`.
+Unknown roles are warned but not silently dropped.
 
 ## Truncation strategy
 
 ```yaml
-truncate_side: left   # always recommended for chat
+truncate_side: left
 max_length: 4096
 ```
 
-Naive left-truncation (keep last N tokens) destroys the system prompt and
-tool schemas. The pipeline uses **structured truncation** instead:
+Structured truncation order:
+1. Preserve conversation anchors:
+   - keep system context and latest user/assistant turns.
+2. Remove oldest middle turns first:
+   - shrink history with minimal semantic damage.
+3. Trim `reasoning_content` in kept turns:
+   - reduce token load before cutting answer context.
+4. Apply token-level left truncation only as final fallback:
+   - used only when structured pruning is not enough.
 
-1. Drop oldest middle turns first (keep system + last user + last assistant)
-2. Trim `reasoning_content` in kept turns
-3. Fallback: token-level left-truncation only if still over `max_length`
+Why this order:
+- naive left truncation can drop system/tool context first,
+- structured truncation keeps instruction and recent interaction integrity longer.
 
----
+## Practical impact
 
-## Dataset diagnostics
+- Keeps conversational structure more stable under max-length pressure.
+- Improves consistency of assistant-only loss behavior.
+- Reduces hidden regressions from schema mismatch and unknown roles.
+
+## Recommended defaults
+
+```yaml
+dataset_schema: auto
+messages_field: messages
+assistant_roles: ["assistant"]
+truncate_side: left
+extract_think_tags: true
+```
+
+Diagnostics commands:
 
 ```bash
+# Length distribution and truncation rates
 qlora-train --config configs/qwen35/0.8b.yaml --stats-only
-```
 
-Output:
-
-```text
-[Token length stats]  n=247  max_length=5120
-
-  Distribution
-    p25 :    360
-    p50 :    567
-    p75 :   1741
-    p90 :   3608
-    p95 :   4404
-    p99 :   5120  ← above max_length
-    max :   5120  ← above max_length  (dataset max: 8327)
-
-  Window utilisation (tokens / max_length)
-    < 25% :   180 samples  ( 72.9%)   [███████████████░░░░░]
-    25-50%:    19 samples  (  7.7%)   [██░░░░░░░░░░░░░░░░░░]
-    50-75%:    26 samples  ( 10.5%)   [██░░░░░░░░░░░░░░░░░░]
-    75-99%:    16 samples  (  6.5%)   [█░░░░░░░░░░░░░░░░░░░]
-    at max:     6 samples  (  2.4%)   [░░░░░░░░░░░░░░░░░░░░]
-
-  Truncation
-    truncated    :     6 / 247  (2.4%)
-    not truncated:   241 / 247  (97.6%)
-
-(stats-only) exiting without training.
-```
-
-What to look for:
-
-- **`at max` > 30%** — too many samples truncated, raise `max_length` or pre-filter
-- **`< 25%` > 50%** — samples are very short, lower `max_length` to save VRAM
-
-```bash
-# Debug render — see exact tokens + loss mask for 2 samples
+# Render processed samples and masks
 qlora-train --config configs/qwen35/0.8b.yaml --debug-samples 2
 ```
 
----
+Heuristics:
+- `at max > 30%` -> increase `max_length` or pre-filter long samples.
+- `< 25% > 50%` -> lower `max_length` to reduce VRAM usage.
 
-## ParseReport — canonicalization telemetry
+## ParseReport telemetry
 
-`canonicalize_row()` returns a `ParseReport` dataclass alongside the message list.
-The training pipeline aggregates these across the dataset and can surface them in
-logs. Fields:
+`canonicalize_row()` emits `ParseReport` for dataset-level telemetry.
 
-| Field | Type | What it counts |
-|-------|------|----------------|
-| `schema` | `str` | Detected schema: `"messages"` / `"prompt_response"` / `"unknown"` |
-| `extracted_think_from_content` | `int` | Assistant messages where `<think>…</think>` was extracted out of `content` into `reasoning_content` |
-| `moved_reasoning_keys` | `int` | Messages where an alternative reasoning key (`reasoning`, `thinking`, `reason`) was renamed to `reasoning_content` |
-| `dropped_think_messages` | `int` | Messages with role `think_role` dropped because `think_mode: drop` |
-| `tools_present` | `bool` | Whether a tools column was found in the row |
-| `tools_parsed_from_string` | `bool` | Whether the tools value was a JSON string that needed parsing |
-| `unknown_roles` | `list[str]` | Any role names not in `{system, user, assistant, tool}` |
+| Field | Type | Meaning |
+|-------|------|---------|
+| `schema` | `str` | Detected schema: `messages` / `prompt_response` / `unknown` |
+| `extracted_think_from_content` | `int` | Count of extracted inline `<think>` blocks |
+| `moved_reasoning_keys` | `int` | Count of renamed reasoning keys |
+| `dropped_think_messages` | `int` | Messages dropped due to `think_mode: drop` |
+| `tools_present` | `bool` | Tools column found in row |
+| `tools_parsed_from_string` | `bool` | Tools parsed from JSON string |
+| `unknown_roles` | `list[str]` | Roles not in `{system, user, assistant, tool}` |
+
+## Related
+
+- [Config reference](config-reference.md)
+- [Reasoning control](reasoning.md)
+- [Quickstart](quickstart.md)
