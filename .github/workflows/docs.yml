@@ -5,7 +5,9 @@ on:
     branches: [main]
     paths:
       - "docs/**"
+      - "docs/.vitepress/**"
       - "package.json"
+      - "package-lock.json"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
@@ -16,21 +18,24 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: false
+  cancel-in-progress: true
+
+env:
+  DOCS_DIST: docs/.vitepress/dist
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
@@ -39,10 +44,18 @@ jobs:
       - name: Build docs
         run: npm run docs:build
 
+      - name: Verify build output
+        run: |
+          test -d "$DOCS_DIST"
+          test -f "$DOCS_DIST/index.html"
+
+      - name: Ensure .nojekyll
+        run: touch "$DOCS_DIST/.nojekyll"
+
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v4.0.0
+        uses: actions/upload-pages-artifact@v3
         with:
-          path: docs/.vitepress/dist
+          path: ${{ env.DOCS_DIST }}
 
   deploy:
     environment:
@@ -53,4 +66,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4.0.5
+        uses: actions/deploy-pages@v4
